@@ -1,0 +1,546 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# יצירת הטופס הראשי
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "מהפך תמונה לסימנים - Image to ASCII Converter"
+$form.Size = New-Object System.Drawing.Size(900, 700)
+$form.StartPosition = "CenterScreen"
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+
+# משתנים גלובליים
+$selectedImagePath = $null
+$asciiResult = $null
+$selectedBackgroundColor = [System.Drawing.Color]::Black
+$selectedFontColor = [System.Drawing.Color]::White
+
+# פונקציה לשמירת ASCII כתמונה
+function Save-AsciiAsImage {
+    param(
+        [string]$AsciiText,
+        [string]$FilePath,
+        [System.Drawing.Color]$BackgroundColor,
+        [System.Drawing.Color]$FontColor,
+        [int]$FontSize = 8
+    )
+    
+    try {
+        # פיצול הטקסט לשורות ותיקון בעיות
+        $lines = $AsciiText -split "`r`n|`n|`r"
+        $lines = $lines | Where-Object { $_ -ne $null }
+        
+        if ($lines.Count -eq 0) {
+            throw "אין תוכן לשמירה"
+        }
+        
+        # חישוב גודל התמונה
+        $maxLineLength = 0
+        foreach ($line in $lines) {
+            if ($line.Length -gt $maxLineLength) {
+                $maxLineLength = $line.Length
+            }
+        }
+        
+        if ($maxLineLength -eq 0) {
+            $maxLineLength = 80  # ברירת מחדל
+        }
+        
+        # יצירת גופן ומדידת גודל תו
+        $testFont = New-Object System.Drawing.Font("Courier New", $FontSize, [System.Drawing.FontStyle]::Regular)
+        $tempBitmap = New-Object System.Drawing.Bitmap(1, 1)
+        $tempGraphics = [System.Drawing.Graphics]::FromImage($tempBitmap)
+        
+        $charSize = $tempGraphics.MeasureString("W", $testFont)
+        $charWidth = [int]($charSize.Width)
+        $charHeight = [int]($charSize.Height)
+        
+        $tempGraphics.Dispose()
+        $tempBitmap.Dispose()
+        
+        # חישוב גודל התמונה עם מרווחים
+        $padding = 20
+        $imageWidth = ($maxLineLength * $charWidth) + ($padding * 2)
+        $imageHeight = ($lines.Count * $charHeight) + ($padding * 2)
+        
+        # וידוא שהגדלים תקינים
+        if ($imageWidth -le 0) { $imageWidth = 800 }
+        if ($imageHeight -le 0) { $imageHeight = 600 }
+        if ($imageWidth -gt 10000) { $imageWidth = 10000 }
+        if ($imageHeight -gt 10000) { $imageHeight = 10000 }
+        
+        # יצירת תמונה חדשה
+        $bitmap = New-Object System.Drawing.Bitmap([int]$imageWidth, [int]$imageHeight)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        
+        # הגדרות איכות
+        $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        
+        # מילוי רקע
+        $backgroundBrush = New-Object System.Drawing.SolidBrush($BackgroundColor)
+        $graphics.FillRectangle($backgroundBrush, 0, 0, $imageWidth, $imageHeight)
+        
+        # הגדרות טקסט
+        $fontBrush = New-Object System.Drawing.SolidBrush($FontColor)
+        
+        # כתיבת הטקסט
+        $y = $padding
+        foreach ($line in $lines) {
+            if (![string]::IsNullOrEmpty($line)) {
+                $graphics.DrawString($line, $testFont, $fontBrush, $padding, $y)
+            }
+            $y += $charHeight
+        }
+        
+        # קביעת פורמט הקובץ
+        $extension = [System.IO.Path]::GetExtension($FilePath).ToLower()
+        $format = [System.Drawing.Imaging.ImageFormat]::Png
+        
+        switch ($extension) {
+            ".jpg" { $format = [System.Drawing.Imaging.ImageFormat]::Jpeg }
+            ".jpeg" { $format = [System.Drawing.Imaging.ImageFormat]::Jpeg }
+            ".bmp" { $format = [System.Drawing.Imaging.ImageFormat]::Bmp }
+            ".gif" { $format = [System.Drawing.Imaging.ImageFormat]::Gif }
+            default { $format = [System.Drawing.Imaging.ImageFormat]::Png }
+        }
+        
+        # שמירת התמונה
+        $bitmap.Save($FilePath, $format)
+        
+        # ניקוי זיכרון
+        $graphics.Dispose()
+        $bitmap.Dispose()
+        $testFont.Dispose()
+        $backgroundBrush.Dispose()
+        $fontBrush.Dispose()
+        
+        return $true
+    }
+    catch {
+        # ניקוי זיכרון במקרה של שגיאה
+        if ($graphics) { $graphics.Dispose() }
+        if ($bitmap) { $bitmap.Dispose() }
+        if ($testFont) { $testFont.Dispose() }
+        if ($backgroundBrush) { $backgroundBrush.Dispose() }
+        if ($fontBrush) { $fontBrush.Dispose() }
+        
+        throw "שגיאה בשמירת התמונה: $($_.Exception.Message)"
+    }
+}
+
+# פונקציה להמרת תמונה ל-ASCII
+function Convert-ImageToAscii {
+    param(
+        [string]$ImagePath,
+        [string]$CharacterSet,
+        [int]$Width,
+        [double]$Contrast = 1.5
+    )
+    
+    try {
+        # טעינת התמונה
+        $bitmap = [System.Drawing.Bitmap]::new($ImagePath)
+        
+        # חישוב גובה יחסי
+        $aspectRatio = $bitmap.Height / $bitmap.Width
+        $height = [int]($Width * $aspectRatio * 0.4)
+        
+        # יצירת תמונה מוקטנת עם שיפור איכות
+        $resizedBitmap = New-Object System.Drawing.Bitmap($Width, $height)
+        $graphics = [System.Drawing.Graphics]::FromImage($resizedBitmap)
+        
+        # הגדרות איכות גבוהה
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+        
+        $graphics.DrawImage($bitmap, 0, 0, $Width, $height)
+        
+        # המרה ל-ASCII עם שיפור ניגודיות
+        $asciiArt = ""
+        $charArray = $CharacterSet.ToCharArray()
+        
+        for ($y = 0; $y -lt $height; $y++) {
+            for ($x = 0; $x -lt $width; $x++) {
+                $pixel = $resizedBitmap.GetPixel($x, $y)
+                
+                # חישוב בהירות הפיקסל עם משקלים מותאמים
+                $brightness = ($pixel.R * 0.299 + $pixel.G * 0.587 + $pixel.B * 0.114) / 255
+                
+                # החלת ניגודיות
+                $brightness = [Math]::Pow($brightness, 1.0 / $Contrast)
+                $brightness = [Math]::Max(0, [Math]::Min(1, $brightness))
+                
+                # בחירת התו המתאים עם דיוק גבוה יותר
+                $charIndex = [Math]::Floor($brightness * ($charArray.Length - 1))
+                $charIndex = [Math]::Max(0, [Math]::Min($charArray.Length - 1, $charIndex))
+                
+                $asciiArt += $charArray[$charIndex]
+            }
+            $asciiArt += "`r`n"
+        }
+        
+        # ניקוי זיכרון
+        $graphics.Dispose()
+        $resizedBitmap.Dispose()
+        $bitmap.Dispose()
+        
+        return $asciiArt
+    }
+    catch {
+        throw "שגיאה בהמרת התמונה: $($_.Exception.Message)"
+    }
+}
+
+# כותרת
+$titleLabel = New-Object System.Windows.Forms.Label
+$titleLabel.Text = "מהפך תמונה לאמנות ASCII"
+$titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$titleLabel.Location = New-Object System.Drawing.Point(20, 20)
+$titleLabel.Size = New-Object System.Drawing.Size(400, 30)
+$titleLabel.TextAlign = "MiddleLeft"
+$form.Controls.Add($titleLabel)
+
+# GroupBox לבחירת תמונה
+$imageGroupBox = New-Object System.Windows.Forms.GroupBox
+$imageGroupBox.Text = "בחירת תמונה"
+$imageGroupBox.Location = New-Object System.Drawing.Point(20, 60)
+$imageGroupBox.Size = New-Object System.Drawing.Size(840, 60)
+$form.Controls.Add($imageGroupBox)
+
+# כפתור בחירת תמונה
+$selectImageButton = New-Object System.Windows.Forms.Button
+$selectImageButton.Text = "בחר תמונה"
+$selectImageButton.Location = New-Object System.Drawing.Point(20, 25)
+$selectImageButton.Size = New-Object System.Drawing.Size(100, 25)
+$imageGroupBox.Controls.Add($selectImageButton)
+
+# תווית נתיב התמונה
+$imagePathLabel = New-Object System.Windows.Forms.Label
+$imagePathLabel.Text = "לא נבחרה תמונה"
+$imagePathLabel.Location = New-Object System.Drawing.Point(140, 25)
+$imagePathLabel.Size = New-Object System.Drawing.Size(680, 25)
+$imagePathLabel.TextAlign = "MiddleLeft"
+$imageGroupBox.Controls.Add($imagePathLabel)
+
+# GroupBox להגדרות
+$settingsGroupBox = New-Object System.Windows.Forms.GroupBox
+$settingsGroupBox.Text = "הגדרות"
+$settingsGroupBox.Location = New-Object System.Drawing.Point(20, 130)
+$settingsGroupBox.Size = New-Object System.Drawing.Size(840, 180)
+$form.Controls.Add($settingsGroupBox)
+
+# תווית סימנים
+$charLabel = New-Object System.Windows.Forms.Label
+$charLabel.Text = "סימנים להמרה (מבהיר לכהה):"
+$charLabel.Location = New-Object System.Drawing.Point(20, 25)
+$charLabel.Size = New-Object System.Drawing.Size(200, 20)
+$settingsGroupBox.Controls.Add($charLabel)
+
+# תיבת טקסט לסימנים
+$characterTextBox = New-Object System.Windows.Forms.TextBox
+$characterTextBox.Text = ".'^ABto6#"
+$characterTextBox.Location = New-Object System.Drawing.Point(20, 50)
+$characterTextBox.Size = New-Object System.Drawing.Size(800, 20)
+$characterTextBox.Font = New-Object System.Drawing.Font("Courier New", 9)
+$settingsGroupBox.Controls.Add($characterTextBox)
+
+# תווית רוחב
+$widthLabel = New-Object System.Windows.Forms.Label
+$widthLabel.Text = "רוחב בתווים:"
+$widthLabel.Location = New-Object System.Drawing.Point(20, 85)
+$widthLabel.Size = New-Object System.Drawing.Size(100, 20)
+$settingsGroupBox.Controls.Add($widthLabel)
+
+# סלייד רוחב
+$widthTrackBar = New-Object System.Windows.Forms.TrackBar
+$widthTrackBar.Minimum = 50
+$widthTrackBar.Maximum = 200
+$widthTrackBar.Value = 100
+$widthTrackBar.TickFrequency = 25
+$widthTrackBar.Location = New-Object System.Drawing.Point(120, 80)
+$widthTrackBar.Size = New-Object System.Drawing.Size(200, 45)
+$settingsGroupBox.Controls.Add($widthTrackBar)
+
+# תווית ערך רוחב
+$widthValueLabel = New-Object System.Windows.Forms.Label
+$widthValueLabel.Text = "100"
+$widthValueLabel.Location = New-Object System.Drawing.Point(330, 85)
+$widthValueLabel.Size = New-Object System.Drawing.Size(40, 20)
+$settingsGroupBox.Controls.Add($widthValueLabel)
+
+# תווית ניגודיות
+$contrastLabel = New-Object System.Windows.Forms.Label
+$contrastLabel.Text = "ניגודיות:"
+$contrastLabel.Location = New-Object System.Drawing.Point(400, 85)
+$contrastLabel.Size = New-Object System.Drawing.Size(80, 20)
+$settingsGroupBox.Controls.Add($contrastLabel)
+
+# סלייד ניגודיות
+$contrastTrackBar = New-Object System.Windows.Forms.TrackBar
+$contrastTrackBar.Minimum = 5
+$contrastTrackBar.Maximum = 30
+$contrastTrackBar.Value = 15
+$contrastTrackBar.TickFrequency = 5
+$contrastTrackBar.Location = New-Object System.Drawing.Point(480, 80)
+$contrastTrackBar.Size = New-Object System.Drawing.Size(200, 45)
+$settingsGroupBox.Controls.Add($contrastTrackBar)
+
+# תווית ערך ניגודיות
+$contrastValueLabel = New-Object System.Windows.Forms.Label
+$contrastValueLabel.Text = "1.5"
+$contrastValueLabel.Location = New-Object System.Drawing.Point(690, 85)
+$contrastValueLabel.Size = New-Object System.Drawing.Size(40, 20)
+$settingsGroupBox.Controls.Add($contrastValueLabel)
+
+# כפתורי צבעים
+$bgColorLabel = New-Object System.Windows.Forms.Label
+$bgColorLabel.Text = "צבע רקע:"
+$bgColorLabel.Location = New-Object System.Drawing.Point(20, 130)
+$bgColorLabel.Size = New-Object System.Drawing.Size(80, 20)
+$settingsGroupBox.Controls.Add($bgColorLabel)
+
+$backgroundColorButton = New-Object System.Windows.Forms.Button
+$backgroundColorButton.Text = "שחור"
+$backgroundColorButton.BackColor = [System.Drawing.Color]::Black
+$backgroundColorButton.ForeColor = [System.Drawing.Color]::White
+$backgroundColorButton.Location = New-Object System.Drawing.Point(100, 125)
+$backgroundColorButton.Size = New-Object System.Drawing.Size(80, 25)
+$settingsGroupBox.Controls.Add($backgroundColorButton)
+
+$fontColorLabel = New-Object System.Windows.Forms.Label
+$fontColorLabel.Text = "צבע גופן:"
+$fontColorLabel.Location = New-Object System.Drawing.Point(200, 130)
+$fontColorLabel.Size = New-Object System.Drawing.Size(80, 20)
+$settingsGroupBox.Controls.Add($fontColorLabel)
+
+$fontColorButton = New-Object System.Windows.Forms.Button
+$fontColorButton.Text = "לבן"
+$fontColorButton.BackColor = [System.Drawing.Color]::White
+$fontColorButton.ForeColor = [System.Drawing.Color]::Black
+$fontColorButton.Location = New-Object System.Drawing.Point(280, 125)
+$fontColorButton.Size = New-Object System.Drawing.Size(80, 25)
+$settingsGroupBox.Controls.Add($fontColorButton)
+
+# כפתורי פעולה
+$convertButton = New-Object System.Windows.Forms.Button
+$convertButton.Text = "המר לסימנים"
+$convertButton.Location = New-Object System.Drawing.Point(400, 125)
+$convertButton.Size = New-Object System.Drawing.Size(100, 25)
+$convertButton.Enabled = $false
+$settingsGroupBox.Controls.Add($convertButton)
+
+$saveButton = New-Object System.Windows.Forms.Button
+$saveButton.Text = "שמור טקסט"
+$saveButton.Location = New-Object System.Drawing.Point(520, 125)
+$saveButton.Size = New-Object System.Drawing.Size(80, 25)
+$saveButton.Enabled = $false
+$settingsGroupBox.Controls.Add($saveButton)
+
+$saveImageButton = New-Object System.Windows.Forms.Button
+$saveImageButton.Text = "שמור תמונה"
+$saveImageButton.Location = New-Object System.Drawing.Point(610, 125)
+$saveImageButton.Size = New-Object System.Drawing.Size(80, 25)
+$saveImageButton.Enabled = $false
+$settingsGroupBox.Controls.Add($saveImageButton)
+
+$copyButton = New-Object System.Windows.Forms.Button
+$copyButton.Text = "העתק ללוח"
+$copyButton.Location = New-Object System.Drawing.Point(700, 125)
+$copyButton.Size = New-Object System.Drawing.Size(80, 25)
+$copyButton.Enabled = $false
+$settingsGroupBox.Controls.Add($copyButton)
+
+# GroupBox לתוצאה
+$resultGroupBox = New-Object System.Windows.Forms.GroupBox
+$resultGroupBox.Text = "תוצאה"
+$resultGroupBox.Location = New-Object System.Drawing.Point(20, 320)
+$resultGroupBox.Size = New-Object System.Drawing.Size(840, 300)
+$form.Controls.Add($resultGroupBox)
+
+# תיבת טקסט לתוצאה
+$resultTextBox = New-Object System.Windows.Forms.TextBox
+$resultTextBox.Multiline = $true
+$resultTextBox.ScrollBars = "Both"
+$resultTextBox.Font = New-Object System.Drawing.Font("Courier New", 6)
+$resultTextBox.BackColor = $selectedBackgroundColor
+$resultTextBox.ForeColor = $selectedFontColor
+$resultTextBox.Location = New-Object System.Drawing.Point(10, 20)
+$resultTextBox.Size = New-Object System.Drawing.Size(820, 270)
+$resultTextBox.ReadOnly = $true
+$resultGroupBox.Controls.Add($resultTextBox)
+
+# סרגל סטטוס
+$statusBar = New-Object System.Windows.Forms.StatusBar
+$statusBar.Text = "מוכן להמרה"
+$form.Controls.Add($statusBar)
+
+# אירועים
+$selectImageButton.Add_Click({
+    $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+    $openFileDialog.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tiff"
+    $openFileDialog.Title = "בחר תמונה להמרה"
+    
+    if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:selectedImagePath = $openFileDialog.FileName
+        $imagePathLabel.Text = [System.IO.Path]::GetFileName($selectedImagePath)
+        $convertButton.Enabled = $true
+        $statusBar.Text = "תמונה נבחרה: " + [System.IO.Path]::GetFileName($selectedImagePath)
+    }
+})
+
+$widthTrackBar.Add_ValueChanged({
+    $widthValueLabel.Text = $widthTrackBar.Value.ToString()
+})
+
+$contrastTrackBar.Add_ValueChanged({
+    $contrastValue = $contrastTrackBar.Value / 10.0
+    $contrastValueLabel.Text = $contrastValue.ToString("F1")
+})
+
+$backgroundColorButton.Add_Click({
+    $colorDialog = New-Object System.Windows.Forms.ColorDialog
+    $colorDialog.Color = $selectedBackgroundColor
+    $colorDialog.AllowFullOpen = $true
+    
+    if ($colorDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:selectedBackgroundColor = $colorDialog.Color
+        $backgroundColorButton.BackColor = $selectedBackgroundColor
+        $backgroundColorButton.Text = $selectedBackgroundColor.Name
+        $resultTextBox.BackColor = $selectedBackgroundColor
+        
+        # התאמת צבע הטקסט של הכפתור
+        $brightness = ($selectedBackgroundColor.R * 0.299 + $selectedBackgroundColor.G * 0.587 + $selectedBackgroundColor.B * 0.114)
+        if ($brightness -gt 128) {
+            $backgroundColorButton.ForeColor = [System.Drawing.Color]::Black
+        } else {
+            $backgroundColorButton.ForeColor = [System.Drawing.Color]::White
+        }
+    }
+})
+
+$fontColorButton.Add_Click({
+    $colorDialog = New-Object System.Windows.Forms.ColorDialog
+    $colorDialog.Color = $selectedFontColor
+    $colorDialog.AllowFullOpen = $true
+    
+    if ($colorDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:selectedFontColor = $colorDialog.Color
+        $fontColorButton.BackColor = $selectedFontColor
+        $fontColorButton.Text = $selectedFontColor.Name
+        $resultTextBox.ForeColor = $selectedFontColor
+        
+        # התאמת צבע הטקסט של הכפתור
+        $brightness = ($selectedFontColor.R * 0.299 + $selectedFontColor.G * 0.587 + $selectedFontColor.B * 0.114)
+        if ($brightness -gt 128) {
+            $fontColorButton.ForeColor = [System.Drawing.Color]::Black
+        } else {
+            $fontColorButton.ForeColor = [System.Drawing.Color]::White
+        }
+    }
+})
+
+$convertButton.Add_Click({
+    if (-not $selectedImagePath) {
+        [System.Windows.Forms.MessageBox]::Show("אנא בחר תמונה קודם", "שגיאה", "OK", "Warning")
+        return
+    }
+    
+    $characterSet = $characterTextBox.Text
+    if ([string]::IsNullOrWhiteSpace($characterSet)) {
+        [System.Windows.Forms.MessageBox]::Show("אנא הכנס סימנים להמרה", "שגיאה", "OK", "Warning")
+        return
+    }
+    
+    try {
+        $statusBar.Text = "מבצע המרה..."
+        $convertButton.Enabled = $false
+        $form.Refresh()
+        
+        $width = $widthTrackBar.Value
+        $contrast = $contrastTrackBar.Value / 10.0
+        $script:asciiResult = Convert-ImageToAscii -ImagePath $selectedImagePath -CharacterSet $characterSet -Width $width -Contrast $contrast
+        
+        $resultTextBox.Text = $asciiResult
+        $saveButton.Enabled = $true
+        $saveImageButton.Enabled = $true
+        $copyButton.Enabled = $true
+        $statusBar.Text = "ההמרה הושלמה בהצלחה!"
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("שגיאה בהמרה: $($_.Exception.Message)", "שגיאה", "OK", "Error")
+        $statusBar.Text = "שגיאה בהמרה"
+    }
+    finally {
+        $convertButton.Enabled = $true
+    }
+})
+
+$saveButton.Add_Click({
+    if (-not $asciiResult) { return }
+    
+    $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+    $saveFileDialog.Filter = "Text Files|*.txt"
+    $saveFileDialog.Title = "שמור תוצאת ASCII כטקסט"
+    $saveFileDialog.FileName = "ascii_art.txt"
+    
+    if ($saveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        try {
+            [System.IO.File]::WriteAllText($saveFileDialog.FileName, $asciiResult, [System.Text.Encoding]::UTF8)
+            $statusBar.Text = "הקובץ נשמר בהצלחה: " + [System.IO.Path]::GetFileName($saveFileDialog.FileName)
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("שגיאה בשמירת הקובץ: $($_.Exception.Message)", "שגיאה", "OK", "Error")
+        }
+    }
+})
+
+$saveImageButton.Add_Click({
+    if (-not $asciiResult) { return }
+    
+    $saveFileDialog = New-Object System.Windows.Forms.SaveFileDialog
+    $saveFileDialog.Filter = "PNG Image|*.png|JPEG Image|*.jpg|Bitmap Image|*.bmp|GIF Image|*.gif"
+    $saveFileDialog.Title = "שמור תוצאת ASCII כתמונה"
+    $saveFileDialog.FileName = "ascii_art.png"
+    
+    if ($saveFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        try {
+            $statusBar.Text = "שומר תמונה..."
+            $form.Refresh()
+            
+            $success = Save-AsciiAsImage -AsciiText $asciiResult -FilePath $saveFileDialog.FileName -BackgroundColor $selectedBackgroundColor -FontColor $selectedFontColor
+            
+            if ($success) {
+                $statusBar.Text = "התמונה נשמרה בהצלחה: " + [System.IO.Path]::GetFileName($saveFileDialog.FileName)
+                
+                # שאלה אם לפתוח את התמונה
+                $result = [System.Windows.Forms.MessageBox]::Show("התמונה נשמרה בהצלחה!`nהאם תרצה לפתוח אותה?", "שמירה הושלמה", "YesNo", "Question")
+                if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+                    Start-Process $saveFileDialog.FileName
+                }
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("שגיאה בשמירת התמונה: $($_.Exception.Message)", "שגיאה", "OK", "Error")
+            $statusBar.Text = "שגיאה בשמירת התמונה"
+        }
+    }
+})
+
+$copyButton.Add_Click({
+    if (-not $asciiResult) { return }
+    
+    try {
+        [System.Windows.Forms.Clipboard]::SetText($asciiResult)
+        $statusBar.Text = "התוצאה הועתקה ללוח!"
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("שגיאה בהעתקה ללוח", "שגיאה", "OK", "Error")
+    }
+})
+
+# הצגת הטופס
+$form.ShowDialog() | Out-Null
